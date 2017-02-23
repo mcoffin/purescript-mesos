@@ -3,11 +3,14 @@ module Mesos.Scheduler where
 import Prelude
 import Control.Monad.Aff (Aff, makeAff)
 import Control.Monad.Aff.AVar (AVAR)
+import Control.Monad.Eff (Eff)
 import Control.Monad.Eff.Class (liftEff)
 import Control.Monad.Eff.Console (CONSOLE, log)
-import Control.Monad.Eff.Exception (EXCEPTION, Error, error, throwException)
+import Control.Monad.Eff.Exception (EXCEPTION, Error, throw, throwException)
+import Control.Monad.Except (runExcept)
 import Control.Monad.Error.Class (class MonadError, throwError)
 import Control.Monad.State (execState, modify)
+import Data.Either (either)
 import Data.Foreign (Foreign, writeObject, toForeign, ForeignError(..))
 import Data.Foreign.Class (class AsForeign, class IsForeign, readProp, write, (.=))
 import Data.List.NonEmpty as NEL
@@ -21,7 +24,7 @@ import Node.HTTP.Client (RequestHeaders(..), RequestOptions, Response, request, 
 import Node.Process (stdout)
 import Mesos.Raw (FrameworkID, FrameworkInfo)
 import Mesos.RecordIO (onRecordIO)
-import Mesos.Util (jsonStringify)
+import Mesos.Util (jsonStringify, fromJSON, throwErrorS)
 import Node.Stream (end, writeString, pipe)
 
 newtype Subscribed = Subscribed { frameworkId :: FrameworkID
@@ -49,10 +52,12 @@ instance subscribeAsForeign :: AsForeign Subscribe where
     write (Subscribe obj) = writeObject props where
         props = [ "framework_info" .= write obj.frameworkInfo
                 ]
+
 -- | Represents a single RecordIO message
 data Message = SubscribeMessage Subscribe
              | SubscribedMessage Subscribed
 
+-- | Utility for Writing a mesos subscribe-style recordio message
 writeMessage :: forall a. (AsForeign a) => String -> String -> a -> Foreign
 writeMessage t k d = writeObject props where
     props = [ "type" .= toForeign t
@@ -69,6 +74,7 @@ instance messageIsForeign :: IsForeign Message where
         readMessageType "SUBSCRIBED" = SubscribedMessage <$> readProp "subscribed" value
         readMessageType _ = throwError $ NEL.singleton $ ErrorAtProperty "type" (ForeignError "Unknown message type")
 
+-- | List of common headers to include in a call to the mesos scheduler subscribe api
 subscribeHeaders :: RequestHeaders
 subscribeHeaders =
     SM.insert "Content-Type" "application/json" >>>
@@ -77,11 +83,12 @@ subscribeHeaders =
     RequestHeaders $
     SM.empty
 
+-- | Make a call to `/api/v1/subscribe`, taking an action for each message
 subscribe :: forall eff. Options RequestOptions
           -> Subscribe
-          -> (String -> Aff (avar :: AVAR, err :: EXCEPTION, http :: HTTP.HTTP, console :: CONSOLE | eff) Unit)
+          -> (Message -> Eff (avar :: AVAR, err :: EXCEPTION, http :: HTTP.HTTP, console :: CONSOLE | eff) Unit)
           -> Aff (avar :: AVAR, err :: EXCEPTION, http :: HTTP.HTTP, console :: CONSOLE | eff) Unit
-subscribe userReqOpts subscribeInfo listeners = do
+subscribe userReqOpts subscribeInfo callback = do
     res <- makeAff \_ onS -> do
         req <- request reqOpts onS
         let reqStream = requestAsStream req
@@ -95,13 +102,17 @@ subscribe userReqOpts subscribeInfo listeners = do
           | statusCode res == 200 = do
               mesosStreamId <- requiredHeader "mesos-stream-id"
               liftEff <<< log $ "mesos-stream-id: " <> mesosStreamId
-              liftEff $ onRecordIO resStream throwException log
+              liftEff $ onRecordIO resStream throwException handleRecord
               where
+                  handleRecord =
+                      either (throw <<< show) callback <<<
+                      runExcept <<<
+                      fromJSON
                   headers = responseHeaders res
                   resStream = responseAsStream res
                   requiredHeader :: forall m. (MonadError Error m) => String -> m String
                   requiredHeader key =
-                      maybe' (throwError <<< error <<< e) pure $ lookup key headers where
+                      maybe' (throwErrorS <<< e) pure $ lookup key headers where
                           e _ = "Header \"" <> key <> "\" not found"
           | otherwise = do
               liftEff do
