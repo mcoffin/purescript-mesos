@@ -1,0 +1,7 @@
+{
+  "name": "purescript-mesos",
+  "private": true,
+  "dependencies": {
+    "minimist": "^1.2.0"
+  }
+}
