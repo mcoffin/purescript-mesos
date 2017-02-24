@@ -13,6 +13,7 @@ import Control.Monad.State (execState, modify)
 import Data.Either (either)
 import Data.Foreign (Foreign, writeObject, toForeign, ForeignError(..))
 import Data.Foreign.Class (class AsForeign, class IsForeign, readProp, write, (.=))
+import Data.Foreign.Index (prop)
 import Data.List.NonEmpty as NEL
 import Data.Maybe (maybe')
 import Data.Options (Options, (:=))
@@ -22,7 +23,7 @@ import Node.Encoding as Encoding
 import Node.HTTP as HTTP
 import Node.HTTP.Client (RequestHeaders(..), RequestOptions, Response, request, method, path, requestAsStream, responseHeaders, responseAsStream, statusCode, headers)
 import Node.Process (stdout)
-import Mesos.Raw (FrameworkID, FrameworkInfo, Offer)
+import Mesos.Raw (FrameworkID, FrameworkInfo, Offer, OfferID)
 import Mesos.RecordIO (onRecordIO)
 import Mesos.Util (jsonStringify, fromJSON, throwErrorS)
 import Node.Stream (end, writeString, pipe)
@@ -57,6 +58,7 @@ instance subscribeAsForeign :: AsForeign Subscribe where
 data Message = SubscribeMessage Subscribe
              | SubscribedMessage Subscribed
              | OffersMessage (Array Offer)
+             | RescindMessage OfferID
              | HeartbeatMessage
 
 -- | Utility for Writing a mesos subscribe-style recordio message
@@ -70,6 +72,10 @@ instance messageAsForeign :: AsForeign Message where
     write (SubscribeMessage subscribeInfo) = writeMessage "SUBSCRIBE" "subscribe" subscribeInfo
     write (SubscribedMessage subscribedInfo) = writeMessage "SUBSCRIBED" "subscribed" subscribedInfo
     write (OffersMessage offers) = writeMessage "OFFERS" "offers" offers
+    write (RescindMessage offerId) = toForeign $
+        { type: "RESCIND"
+        , rescind: { offer_id: write offerId }
+        }
     write HeartbeatMessage = toForeign $ { type: "HEARTBEAT" }
 
 instance messageIsForeign :: IsForeign Message where
@@ -77,6 +83,7 @@ instance messageIsForeign :: IsForeign Message where
         readMessageType "SUBSCRIBE" = throwError $ NEL.singleton $ ForeignError "Unimplemented!" -- TODO: implement
         readMessageType "SUBSCRIBED" = SubscribedMessage <$> readProp "subscribed" value
         readMessageType "OFFERS" = OffersMessage <$> readProp "offers" value
+        readMessageType "RESCIND" = RescindMessage <$> (prop "rescind" value >>= readProp "offer_id")
         readMessageType "HEARTBEAT" = pure HeartbeatMessage
         readMessageType _ = throwError $ NEL.singleton $ ErrorAtProperty "type" (ForeignError "Unknown message type")
 
