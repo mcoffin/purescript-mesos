@@ -23,7 +23,7 @@ import Node.Encoding as Encoding
 import Node.HTTP as HTTP
 import Node.HTTP.Client (RequestHeaders(..), RequestOptions, Response, request, method, path, requestAsStream, responseHeaders, responseAsStream, statusCode, headers)
 import Node.Process (stdout)
-import Mesos.Raw (FrameworkID, FrameworkInfo, Offer, OfferID)
+import Mesos.Raw (FrameworkID, FrameworkInfo, Offer, OfferID, TaskStatus)
 import Mesos.RecordIO (onRecordIO)
 import Mesos.Util (jsonStringify, fromJSON, throwErrorS)
 import Node.Stream (end, writeString, pipe)
@@ -59,6 +59,7 @@ data Message = SubscribeMessage Subscribe
              | SubscribedMessage Subscribed
              | OffersMessage (Array Offer)
              | RescindMessage OfferID
+             | UpdateMessage TaskStatus
              | HeartbeatMessage
 
 -- | Utility for Writing a mesos subscribe-style recordio message
@@ -76,6 +77,10 @@ instance messageAsForeign :: AsForeign Message where
         { type: "RESCIND"
         , rescind: { offer_id: write offerId }
         }
+    write (UpdateMessage taskStatus) = toForeign $
+        { type: "UPDATE"
+        , update: { status: write taskStatus }
+        }
     write HeartbeatMessage = toForeign $ { type: "HEARTBEAT" }
 
 instance messageIsForeign :: IsForeign Message where
@@ -84,6 +89,7 @@ instance messageIsForeign :: IsForeign Message where
         readMessageType "SUBSCRIBED" = SubscribedMessage <$> readProp "subscribed" value
         readMessageType "OFFERS" = OffersMessage <$> readProp "offers" value
         readMessageType "RESCIND" = RescindMessage <$> (prop "rescind" value >>= readProp "offer_id")
+        readMessageType "UPDATE" = UpdateMessage <$> (prop "update" value >>= readProp "status")
         readMessageType "HEARTBEAT" = pure HeartbeatMessage
         readMessageType _ = throwError $ NEL.singleton $ ErrorAtProperty "type" (ForeignError "Unknown message type")
 

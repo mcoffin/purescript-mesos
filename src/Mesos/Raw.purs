@@ -17,6 +17,67 @@ readPropNU p v = unNullOrUndefined <$> (prop p v >>= readNullOrUndefined read)
 readPropNUM :: forall a. (IsForeign a, Monoid a) => String -> Foreign -> F a
 readPropNUM p v = fromMaybe mempty <$> readPropNU p v
 
+newtype TaskStatus = TaskStatus
+    { taskId :: TaskID
+    , taskState :: String
+    , message :: Maybe String
+    , source :: Maybe String
+    , reason :: Maybe String
+    , data :: Maybe String
+    , slaveId :: Maybe SlaveID
+    , executorId :: Maybe ExecutorID
+    , timestamp :: Maybe Number
+    , uuid :: Maybe String
+    , healthy :: Maybe Boolean
+    , labels :: Maybe Labels
+    -- TODO: Add containerStatus
+    }
+
+instance taskStatusAsForeign :: AsForeign TaskStatus where
+    write (TaskStatus obj) = writeObject props where
+        props = [ "task_id" .= write obj.taskId
+                , "task_state" .= write obj.taskState
+                , "message" .= (write $ Undefined obj.message)
+                , "source" .= (write $ Undefined obj.source)
+                , "reason" .= (write $ Undefined obj.reason)
+                , "data" .= (write $ Undefined obj.data)
+                , "slave_id" .= (write $ Undefined obj.slaveId)
+                , "executor_id" .= (write $ Undefined obj.executorId)
+                , "timestamp" .= (write $ Undefined obj.timestamp)
+                , "uuid" .= (write $ Undefined obj.uuid)
+                , "healthy" .= (write $ Undefined obj.healthy)
+                , "labels" .= (write $ Undefined obj.labels)
+                ]
+
+instance taskStatusIsForeign :: IsForeign TaskStatus where
+    read obj = do
+        taskId <- readProp "task_id" obj
+        taskState <- readProp "task_state" obj
+        message <- readPropNU "message" obj
+        source <- readPropNU "source" obj
+        reason <- readPropNU "reason" obj
+        d <- readPropNU "data" obj
+        slaveId <- readPropNU "slave_id" obj
+        executorId <- readPropNU "executor_id" obj
+        timestamp <- readPropNU "timestamp" obj
+        uuid <- readPropNU "uuid" obj
+        healthy <- readPropNU "healthy" obj
+        labels <- readPropNU "labels" obj
+        pure <<< TaskStatus $
+            { taskId: taskId
+            , taskState: taskState
+            , message: message
+            , source: source
+            , reason: reason
+            , data: d
+            , slaveId: slaveId
+            , executorId: executorId
+            , timestamp: timestamp
+            , uuid: uuid
+            , healthy: healthy
+            , labels: labels
+            }
+
 newtype Range = Range
     { begin :: Int
     , end :: Int
@@ -253,6 +314,7 @@ type OfferID = Value String
 type FrameworkID = Value String
 type ExecutorID = Value String
 type SlaveID = Value String
+type TaskID = Value String
 type Text = Value String
 type Scalar = Value Number
 
