@@ -3,15 +3,20 @@ module Mesos.Scheduler where
 import Prelude
 import Control.Monad.Aff (Aff, makeAff)
 import Control.Monad.Aff.AVar (AVAR)
+import Control.Monad.Eff (Eff)
 import Control.Monad.Eff.Class (liftEff)
 import Control.Monad.Eff.Console (CONSOLE, log)
-import Control.Monad.Eff.Exception (EXCEPTION, Error, error, throwException)
-import Control.Monad.Error.Class (class MonadError, throwError)
+import Control.Monad.Eff.Exception (EXCEPTION, Error, throw, throwException)
+import Control.Monad.Except (runExcept)
+import Control.Monad.Error.Class (class MonadError, throwError, catchError)
 import Control.Monad.State (execState, modify)
+import Data.Either (either)
 import Data.Foreign (Foreign, writeObject, toForeign, ForeignError(..))
 import Data.Foreign.Class (class AsForeign, class IsForeign, readProp, write, (.=))
+import Data.Foreign.Index (prop)
+import Data.Foreign.Undefined (Undefined(..))
 import Data.List.NonEmpty as NEL
-import Data.Maybe (maybe')
+import Data.Maybe (Maybe, maybe')
 import Data.Options (Options, (:=))
 import Data.StrMap (lookup)
 import Data.StrMap as SM
@@ -19,9 +24,9 @@ import Node.Encoding as Encoding
 import Node.HTTP as HTTP
 import Node.HTTP.Client (RequestHeaders(..), RequestOptions, Response, request, method, path, requestAsStream, responseHeaders, responseAsStream, statusCode, headers)
 import Node.Process (stdout)
-import Mesos.Raw (FrameworkID, FrameworkInfo)
+import Mesos.Raw (FrameworkID, FrameworkInfo, Offer, OfferID, TaskStatus, AgentID, ExecutorID, readPropNU)
 import Mesos.RecordIO (onRecordIO)
-import Mesos.Util (jsonStringify)
+import Mesos.Util (jsonStringify, fromJSON, throwErrorS)
 import Node.Stream (end, writeString, pipe)
 
 newtype Subscribed = Subscribed { frameworkId :: FrameworkID
@@ -49,10 +54,67 @@ instance subscribeAsForeign :: AsForeign Subscribe where
     write (Subscribe obj) = writeObject props where
         props = [ "framework_info" .= write obj.frameworkInfo
                 ]
+
+newtype ExecutorMessage = ExecutorMessage
+    { agentId :: AgentID
+    , executorId :: ExecutorID
+    , data :: String
+    }
+
+instance executorMessageAsForeign :: AsForeign ExecutorMessage where
+    write (ExecutorMessage obj) = writeObject props where
+        props = [ "agent_id" .= write obj.agentId
+                , "executor_id" .= write obj.executorId
+                , "data" .= write obj.data
+                ]
+
+instance executorMessageIsForeign :: IsForeign ExecutorMessage where
+    read obj = do
+        agentId <- readProp "agent_id" obj
+        executorId <- readProp "executor_id" obj
+        d <- readProp "data" obj
+        pure <<< ExecutorMessage $
+            { agentId: agentId
+            , executorId: executorId
+            , data: d
+            }
+
+newtype Failure = Failure
+    { slaveId :: Maybe AgentID
+    , executorId :: Maybe ExecutorID
+    , status :: Maybe Int
+    }
+
+instance failureAsForeign :: AsForeign Failure where
+    write (Failure obj) = writeObject props where
+        props = [ "agent_id" .= (write $ Undefined obj.slaveId)
+                , "executor_id" .= (write $ Undefined obj.executorId)
+                , "status" .= (write $ Undefined obj.status)
+                ]
+
+instance failureIsForeign :: IsForeign Failure where
+    read obj = do
+        slaveId <- catchError (readPropNU "agent_id" obj) \_ -> readPropNU "slave_id" obj
+        executorId <- readPropNU "executor_id" obj
+        status <- readPropNU "status" obj
+        pure <<< Failure $
+            { slaveId: slaveId
+            , executorId: executorId
+            , status: status
+            }
+
 -- | Represents a single RecordIO message
 data Message = SubscribeMessage Subscribe
              | SubscribedMessage Subscribed
+             | OffersMessage (Array Offer)
+             | RescindMessage OfferID
+             | UpdateMessage TaskStatus
+             | MessageMessage ExecutorMessage
+             | FailureMessage Failure
+             | ErrorMessage String
+             | HeartbeatMessage
 
+-- | Utility for Writing a mesos subscribe-style recordio message
 writeMessage :: forall a. (AsForeign a) => String -> String -> a -> Foreign
 writeMessage t k d = writeObject props where
     props = [ "type" .= toForeign t
@@ -62,13 +124,37 @@ writeMessage t k d = writeObject props where
 instance messageAsForeign :: AsForeign Message where
     write (SubscribeMessage subscribeInfo) = writeMessage "SUBSCRIBE" "subscribe" subscribeInfo
     write (SubscribedMessage subscribedInfo) = writeMessage "SUBSCRIBED" "subscribed" subscribedInfo
+    write (OffersMessage offers) = writeMessage "OFFERS" "offers" offers
+    write (RescindMessage offerId) = toForeign $
+        { type: "RESCIND"
+        , rescind: { offer_id: write offerId }
+        }
+    write (UpdateMessage taskStatus) = toForeign $
+        { type: "UPDATE"
+        , update: { status: write taskStatus }
+        }
+    write (MessageMessage msg) = writeMessage "MESSAGE" "message" msg
+    write (FailureMessage failure) = writeMessage "FAILURE" "failure" failure
+    write (ErrorMessage msg) = toForeign $
+        { type: "ERROR"
+        , message: msg
+        }
+    write HeartbeatMessage = toForeign $ { type: "HEARTBEAT" }
 
 instance messageIsForeign :: IsForeign Message where
     read value = readProp "type" value >>= readMessageType where
         readMessageType "SUBSCRIBE" = throwError $ NEL.singleton $ ForeignError "Unimplemented!" -- TODO: implement
         readMessageType "SUBSCRIBED" = SubscribedMessage <$> readProp "subscribed" value
+        readMessageType "OFFERS" = OffersMessage <$> readProp "offers" value
+        readMessageType "RESCIND" = RescindMessage <$> (prop "rescind" value >>= readProp "offer_id")
+        readMessageType "UPDATE" = UpdateMessage <$> (prop "update" value >>= readProp "status")
+        readMessageType "MESSAGE" = MessageMessage <$> readProp "message" value
+        readMessageType "FAILURE" = FailureMessage <$> readProp "failure" value
+        readMessageType "ERRROR" = ErrorMessage <$> readProp "message" value
+        readMessageType "HEARTBEAT" = pure HeartbeatMessage
         readMessageType _ = throwError $ NEL.singleton $ ErrorAtProperty "type" (ForeignError "Unknown message type")
 
+-- | List of common headers to include in a call to the mesos scheduler subscribe api
 subscribeHeaders :: RequestHeaders
 subscribeHeaders =
     SM.insert "Content-Type" "application/json" >>>
@@ -77,11 +163,12 @@ subscribeHeaders =
     RequestHeaders $
     SM.empty
 
+-- | Make a call to `/api/v1/subscribe`, taking an action for each message
 subscribe :: forall eff. Options RequestOptions
           -> Subscribe
-          -> (String -> Aff (avar :: AVAR, err :: EXCEPTION, http :: HTTP.HTTP, console :: CONSOLE | eff) Unit)
+          -> (Message -> Eff (avar :: AVAR, err :: EXCEPTION, http :: HTTP.HTTP, console :: CONSOLE | eff) Unit)
           -> Aff (avar :: AVAR, err :: EXCEPTION, http :: HTTP.HTTP, console :: CONSOLE | eff) Unit
-subscribe userReqOpts subscribeInfo listeners = do
+subscribe userReqOpts subscribeInfo callback = do
     res <- makeAff \_ onS -> do
         req <- request reqOpts onS
         let reqStream = requestAsStream req
@@ -95,13 +182,17 @@ subscribe userReqOpts subscribeInfo listeners = do
           | statusCode res == 200 = do
               mesosStreamId <- requiredHeader "mesos-stream-id"
               liftEff <<< log $ "mesos-stream-id: " <> mesosStreamId
-              liftEff $ onRecordIO resStream throwException log
+              liftEff $ onRecordIO resStream throwException handleRecord
               where
+                  handleRecord =
+                      either (throw <<< show) callback <<<
+                      runExcept <<<
+                      fromJSON
                   headers = responseHeaders res
                   resStream = responseAsStream res
                   requiredHeader :: forall m. (MonadError Error m) => String -> m String
                   requiredHeader key =
-                      maybe' (throwError <<< error <<< e) pure $ lookup key headers where
+                      maybe' (throwErrorS <<< e) pure $ lookup key headers where
                           e _ = "Header \"" <> key <> "\" not found"
           | otherwise = do
               liftEff do
