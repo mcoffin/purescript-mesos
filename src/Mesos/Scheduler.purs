@@ -163,6 +163,31 @@ subscribeHeaders =
     RequestHeaders $
     SM.empty
 
+messageHeaders :: SM.StrMap String
+messageHeaders =
+    SM.insert "Content-Type" "application/json" $
+    SM.empty
+
+scheduler :: forall eff. Options RequestOptions
+          -> String
+          -> Message
+          -> Aff (http :: HTTP.HTTP | eff) Response
+scheduler userReqOpts mesosStreamId message =
+    makeAff \_ onS -> do
+        req <- request reqOpts onS
+        let reqStream = requestAsStream req
+            reqData = jsonStringify <<< write $ message
+        writeString reqStream Encoding.UTF8 reqData $ end reqStream (pure unit)
+        pure unit
+    where
+    reqOpts :: Options RequestOptions
+    reqOpts = flip execState userReqOpts do
+        overrideOption $ method := "POST"
+        overrideOption $ path := "/api/v1/scheduler"
+        overrideOption $ headers := (RequestHeaders $ SM.insert "Mesos-Stream-Id" mesosStreamId messageHeaders)
+        where
+            overrideOption o = modify $ flip (<>) o
+
 -- | Make a call to `/api/v1/subscribe`, taking an action for each message
 subscribe :: forall eff. Options RequestOptions
           -> Subscribe
