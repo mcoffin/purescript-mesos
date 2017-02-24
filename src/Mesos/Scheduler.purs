@@ -23,7 +23,7 @@ import Node.Encoding as Encoding
 import Node.HTTP as HTTP
 import Node.HTTP.Client (RequestHeaders(..), RequestOptions, Response, request, method, path, requestAsStream, responseHeaders, responseAsStream, statusCode, headers)
 import Node.Process (stdout)
-import Mesos.Raw (FrameworkID, FrameworkInfo, Offer, OfferID, TaskStatus)
+import Mesos.Raw (FrameworkID, FrameworkInfo, Offer, OfferID, TaskStatus, AgentID, ExecutorID)
 import Mesos.RecordIO (onRecordIO)
 import Mesos.Util (jsonStringify, fromJSON, throwErrorS)
 import Node.Stream (end, writeString, pipe)
@@ -54,12 +54,37 @@ instance subscribeAsForeign :: AsForeign Subscribe where
         props = [ "framework_info" .= write obj.frameworkInfo
                 ]
 
+newtype ExecutorMessage = ExecutorMessage
+    { agentId :: AgentID
+    , executorId :: ExecutorID
+    , data :: String
+    }
+
+instance executorMessageAsForeign :: AsForeign ExecutorMessage where
+    write (ExecutorMessage obj) = writeObject props where
+        props = [ "agent_id" .= write obj.agentId
+                , "executor_id" .= write obj.executorId
+                , "data" .= write obj.data
+                ]
+
+instance executorMessageIsForeign :: IsForeign ExecutorMessage where
+    read obj = do
+        agentId <- readProp "agent_id" obj
+        executorId <- readProp "executor_id" obj
+        d <- readProp "data" obj
+        pure <<< ExecutorMessage $
+            { agentId: agentId
+            , executorId: executorId
+            , data: d
+            }
+
 -- | Represents a single RecordIO message
 data Message = SubscribeMessage Subscribe
              | SubscribedMessage Subscribed
              | OffersMessage (Array Offer)
              | RescindMessage OfferID
              | UpdateMessage TaskStatus
+             | MessageMessage ExecutorMessage
              | HeartbeatMessage
 
 -- | Utility for Writing a mesos subscribe-style recordio message
@@ -81,6 +106,7 @@ instance messageAsForeign :: AsForeign Message where
         { type: "UPDATE"
         , update: { status: write taskStatus }
         }
+    write (MessageMessage msg) = writeMessage "MESSAGE" "message" msg
     write HeartbeatMessage = toForeign $ { type: "HEARTBEAT" }
 
 instance messageIsForeign :: IsForeign Message where
@@ -90,6 +116,7 @@ instance messageIsForeign :: IsForeign Message where
         readMessageType "OFFERS" = OffersMessage <$> readProp "offers" value
         readMessageType "RESCIND" = RescindMessage <$> (prop "rescind" value >>= readProp "offer_id")
         readMessageType "UPDATE" = UpdateMessage <$> (prop "update" value >>= readProp "status")
+        readMessageType "MESSAGE" = MessageMessage <$> readProp "message" value
         readMessageType "HEARTBEAT" = pure HeartbeatMessage
         readMessageType _ = throwError $ NEL.singleton $ ErrorAtProperty "type" (ForeignError "Unknown message type")
 

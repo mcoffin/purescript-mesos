@@ -1,7 +1,7 @@
 module Mesos.Raw where
 
 import Prelude
-import Control.Monad.Error.Class (throwError)
+import Control.Monad.Error.Class (catchError, throwError)
 import Data.Foreign (F, Foreign, ForeignError(..), toForeign, writeObject)
 import Data.Foreign.Class (class AsForeign, class IsForeign, read, write, readProp, (.=))
 import Data.Foreign.Index (prop)
@@ -41,7 +41,7 @@ instance taskStatusAsForeign :: AsForeign TaskStatus where
                 , "source" .= (write $ Undefined obj.source)
                 , "reason" .= (write $ Undefined obj.reason)
                 , "data" .= (write $ Undefined obj.data)
-                , "slave_id" .= (write $ Undefined obj.slaveId)
+                , "agent_id" .= (write $ Undefined obj.slaveId)
                 , "executor_id" .= (write $ Undefined obj.executorId)
                 , "timestamp" .= (write $ Undefined obj.timestamp)
                 , "uuid" .= (write $ Undefined obj.uuid)
@@ -57,7 +57,7 @@ instance taskStatusIsForeign :: IsForeign TaskStatus where
         source <- readPropNU "source" obj
         reason <- readPropNU "reason" obj
         d <- readPropNU "data" obj
-        slaveId <- readPropNU "slave_id" obj
+        slaveId <- catchError (readPropNU "slave_id" obj) \_ -> readPropNU "agent_id" obj
         executorId <- readPropNU "executor_id" obj
         timestamp <- readPropNU "timestamp" obj
         uuid <- readPropNU "uuid" obj
@@ -271,7 +271,7 @@ instance offerAsForeign :: AsForeign Offer where
     write (Offer obj) = writeObject props where
         props = [ "id" .= write obj.id
                 , "framework_id" .= write obj.frameworkId
-                , "slave_id" .= write obj.slaveId
+                , "agent_id" .= write obj.slaveId
                 , "hostname" .= write obj.hostname
                 , "url" .= (write $ Undefined obj.url)
                 , "resources" .= write obj.resources
@@ -283,7 +283,7 @@ instance offerIsForeign :: IsForeign Offer where
     read obj = do
         id <- readProp "id" obj
         frameworkId <- readProp "framework_id" obj
-        slaveId <- readProp "slave_id" obj
+        slaveId <- catchError (readProp "slave_id" obj) \_ -> readProp "agent_id" obj
         hostname <- readProp "hostname" obj
         url <- readPropNU "url" obj
         resources <- readPropNUM "resources" obj
@@ -314,6 +314,7 @@ type OfferID = Value String
 type FrameworkID = Value String
 type ExecutorID = Value String
 type SlaveID = Value String
+type AgentID = SlaveID
 type TaskID = Value String
 type Text = Value String
 type Scalar = Value Number
