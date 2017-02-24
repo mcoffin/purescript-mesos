@@ -22,7 +22,7 @@ import Node.Encoding as Encoding
 import Node.HTTP as HTTP
 import Node.HTTP.Client (RequestHeaders(..), RequestOptions, Response, request, method, path, requestAsStream, responseHeaders, responseAsStream, statusCode, headers)
 import Node.Process (stdout)
-import Mesos.Raw (FrameworkID, FrameworkInfo)
+import Mesos.Raw (FrameworkID, FrameworkInfo, Offer)
 import Mesos.RecordIO (onRecordIO)
 import Mesos.Util (jsonStringify, fromJSON, throwErrorS)
 import Node.Stream (end, writeString, pipe)
@@ -56,6 +56,8 @@ instance subscribeAsForeign :: AsForeign Subscribe where
 -- | Represents a single RecordIO message
 data Message = SubscribeMessage Subscribe
              | SubscribedMessage Subscribed
+             | OffersMessage (Array Offer)
+             | HeartbeatMessage
 
 -- | Utility for Writing a mesos subscribe-style recordio message
 writeMessage :: forall a. (AsForeign a) => String -> String -> a -> Foreign
@@ -67,11 +69,15 @@ writeMessage t k d = writeObject props where
 instance messageAsForeign :: AsForeign Message where
     write (SubscribeMessage subscribeInfo) = writeMessage "SUBSCRIBE" "subscribe" subscribeInfo
     write (SubscribedMessage subscribedInfo) = writeMessage "SUBSCRIBED" "subscribed" subscribedInfo
+    write (OffersMessage offers) = writeMessage "OFFERS" "offers" offers
+    write HeartbeatMessage = toForeign $ { type: "HEARTBEAT" }
 
 instance messageIsForeign :: IsForeign Message where
     read value = readProp "type" value >>= readMessageType where
         readMessageType "SUBSCRIBE" = throwError $ NEL.singleton $ ForeignError "Unimplemented!" -- TODO: implement
         readMessageType "SUBSCRIBED" = SubscribedMessage <$> readProp "subscribed" value
+        readMessageType "OFFERS" = OffersMessage <$> readProp "offers" value
+        readMessageType "HEARTBEAT" = pure HeartbeatMessage
         readMessageType _ = throwError $ NEL.singleton $ ErrorAtProperty "type" (ForeignError "Unknown message type")
 
 -- | List of common headers to include in a call to the mesos scheduler subscribe api
