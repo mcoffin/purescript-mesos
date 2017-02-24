@@ -24,7 +24,7 @@ import Node.Encoding as Encoding
 import Node.HTTP as HTTP
 import Node.HTTP.Client (RequestHeaders(..), RequestOptions, Response, request, method, path, requestAsStream, responseHeaders, responseAsStream, statusCode, headers)
 import Node.Process (stdout)
-import Mesos.Raw (FrameworkID, FrameworkInfo, Offer, OfferID, TaskStatus, AgentID, ExecutorID, readPropNU)
+import Mesos.Raw (FrameworkID, FrameworkInfo, Offer, OfferID, TaskStatus, AgentID, ExecutorID, Filters, readPropNU, readPropNUM)
 import Mesos.RecordIO (onRecordIO)
 import Mesos.Util (jsonStringify, fromJSON, throwErrorS)
 import Node.Stream (end, writeString, pipe)
@@ -103,6 +103,26 @@ instance failureIsForeign :: IsForeign Failure where
             , status: status
             }
 
+newtype Decline = Decline
+    { offerIds :: Array OfferID
+    , filters :: Maybe Filters
+    }
+
+instance declineAsForeign :: AsForeign Decline where
+    write (Decline obj) = writeObject props where
+        props = [ "offer_ids" .= write obj.offerIds
+                , "filters" .= (write $ Undefined obj.filters)
+                ]
+
+instance declineIsForeign :: IsForeign Decline where
+    read obj = do
+        offerIds <- readPropNUM "offer_ids" obj
+        filters <- readPropNU "filters" obj
+        pure <<< Decline $
+            { offerIds: offerIds
+            , filters: filters
+            }
+
 -- | Represents a single RecordIO message
 data Message = SubscribeMessage Subscribe
              | SubscribedMessage Subscribed
@@ -114,6 +134,7 @@ data Message = SubscribeMessage Subscribe
              | ErrorMessage String
              | HeartbeatMessage
              | CustomMessage (forall o. { type :: String | o })
+             | DeclineMessage FrameworkID Decline
 
 instance messageShow :: Show Message where
     show = jsonStringify <<< write
@@ -145,6 +166,11 @@ instance messageAsForeign :: AsForeign Message where
         }
     write HeartbeatMessage = toForeign $ { type: "HEARTBEAT" }
     write (CustomMessage obj) = toForeign obj
+    write (DeclineMessage fwid decline) = toForeign $
+        { type: "DECLINE"
+        , framework_id: write fwid
+        , decline: write decline
+        }
 
 instance messageIsForeign :: IsForeign Message where
     read value = readProp "type" value >>= readMessageType where
@@ -157,6 +183,7 @@ instance messageIsForeign :: IsForeign Message where
         readMessageType "FAILURE" = FailureMessage <$> readProp "failure" value
         readMessageType "ERRROR" = ErrorMessage <$> readProp "message" value
         readMessageType "HEARTBEAT" = pure HeartbeatMessage
+        readMessageType "DECLINE" = DeclineMessage <$> readProp "framework_id" value <*> readProp "decline" value
         readMessageType _ = throwError $ NEL.singleton $ ErrorAtProperty "type" (ForeignError "Unknown message type")
 
 -- | List of common headers to include in a call to the mesos scheduler subscribe api

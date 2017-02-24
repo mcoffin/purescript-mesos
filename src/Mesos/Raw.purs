@@ -17,6 +17,19 @@ readPropNU p v = unNullOrUndefined <$> (prop p v >>= readNullOrUndefined read)
 readPropNUM :: forall a. (IsForeign a, Monoid a) => String -> Foreign -> F a
 readPropNUM p v = fromMaybe mempty <$> readPropNU p v
 
+newtype Filters = Filters
+    { refuseSeconds :: Maybe Number
+    }
+
+instance filtersAsForeign :: AsForeign Filters where
+    write (Filters obj) = toForeign $ { refuse_seconds: write $ Undefined obj.refuseSeconds }
+
+instance filtersIsForeign :: IsForeign Filters where
+    read obj = do
+        refuseSeconds <- readPropNU "refuse_seconds" obj
+        pure $ Filters { refuseSeconds: refuseSeconds
+                       }
+
 newtype TaskStatus = TaskStatus
     { taskId :: TaskID
     , taskState :: String
