@@ -111,6 +111,7 @@ data Message = SubscribeMessage Subscribe
              | UpdateMessage TaskStatus
              | MessageMessage ExecutorMessage
              | FailureMessage Failure
+             | ErrorMessage String
              | HeartbeatMessage
 
 -- | Utility for Writing a mesos subscribe-style recordio message
@@ -134,6 +135,10 @@ instance messageAsForeign :: AsForeign Message where
         }
     write (MessageMessage msg) = writeMessage "MESSAGE" "message" msg
     write (FailureMessage failure) = writeMessage "FAILURE" "failure" failure
+    write (ErrorMessage msg) = toForeign $
+        { type: "ERROR"
+        , message: msg
+        }
     write HeartbeatMessage = toForeign $ { type: "HEARTBEAT" }
 
 instance messageIsForeign :: IsForeign Message where
@@ -145,6 +150,7 @@ instance messageIsForeign :: IsForeign Message where
         readMessageType "UPDATE" = UpdateMessage <$> (prop "update" value >>= readProp "status")
         readMessageType "MESSAGE" = MessageMessage <$> readProp "message" value
         readMessageType "FAILURE" = FailureMessage <$> readProp "failure" value
+        readMessageType "ERRROR" = ErrorMessage <$> readProp "message" value
         readMessageType "HEARTBEAT" = pure HeartbeatMessage
         readMessageType _ = throwError $ NEL.singleton $ ErrorAtProperty "type" (ForeignError "Unknown message type")
 
