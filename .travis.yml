@@ -8,7 +8,6 @@ install:
   - bower install
 script:
   - pulp build
-  - pulp test
 after_success:
   - >-
     test $TRAVIS_TAG &&
