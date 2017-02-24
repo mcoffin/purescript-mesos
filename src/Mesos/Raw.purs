@@ -120,22 +120,22 @@ data Attribute = Attribute String AttributeValue
 instance attributeAsForeign :: AsForeign Attribute where
     write (Attribute name (ScalarAttribute s)) = toForeign $
         { name: name
-        , type: 0
+        , type: "SCALAR"
         , scalar: write s
         }
     write (Attribute name (RangesAttribute ranges)) = toForeign $
         { name: name
-        , type: 1
+        , type: "RANGES"
         , ranges: write ranges
         }
     write (Attribute name (SetAttribute set)) = toForeign $
         { name: name
-        , type: 2
+        , type: "SET"
         , set: write set
         }
     write (Attribute name (TextAttribute text)) = toForeign $
         { name: name
-        , type: 3
+        , type: "TEXT"
         , text: write text
         }
 
@@ -145,10 +145,10 @@ instance attributeIsForeign :: IsForeign Attribute where
         v <- readProp "type" obj >>= readAttributeType
         pure $ Attribute name v
         where
-            readAttributeType 0 = ScalarAttribute <$> readProp "scalar" obj
-            readAttributeType 1 = RangesAttribute <$> readProp "ranges" obj
-            readAttributeType 2 = SetAttribute <$> readProp "set" obj
-            readAttributeType 3 = TextAttribute <$> readProp "text" obj
+            readAttributeType "SCALAR" = ScalarAttribute <$> readProp "scalar" obj
+            readAttributeType "RANGES" = RangesAttribute <$> readProp "ranges" obj
+            readAttributeType "SET" = SetAttribute <$> readProp "set" obj
+            readAttributeType "TEXT" = TextAttribute <$> readProp "text" obj
             readAttributeType t = throwError <<< NEL.singleton <<< ForeignError $ "Unknown attribute type " <> show t
 
 data ResourceValue = ScalarResource Scalar
@@ -160,17 +160,17 @@ data Resource = Resource String ResourceValue
 instance resourceAsForeign :: AsForeign Resource where
     write (Resource name (ScalarResource s)) = toForeign $
         { name: name
-        , type: 0
+        , type: "SCALAR"
         , scalar: write s
         }
     write (Resource name (RangesResource ranges)) = toForeign $
         { name: name
-        , type: 1
+        , type: "RANGES"
         , ranges: write ranges
         }
     write (Resource name (SetResource set)) = toForeign $
         { name: name
-        , type: 2
+        , type: "SET"
         , set: write set
         }
 
@@ -180,9 +180,9 @@ instance resourceIsForiegn :: IsForeign Resource where
         v <- readProp "type" obj >>= readResourceType
         pure $ Resource name v
         where
-            readResourceType 0 = ScalarResource <$> readProp "scalar" obj
-            readResourceType 1 = RangesResource <$> readProp "ranges" obj
-            readResourceType 2 = SetResource <$> readProp "set" obj
+            readResourceType "SCALAR" = ScalarResource <$> readProp "scalar" obj
+            readResourceType "RANGES" = RangesResource <$> readProp "ranges" obj
+            readResourceType "SET" = SetResource <$> readProp "set" obj
             readResourceType t = throwError <<< NEL.singleton <<< ForeignError $ "Unknown resource type " <> show t
 
 newtype Address = Address

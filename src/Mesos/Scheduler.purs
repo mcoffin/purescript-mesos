@@ -150,7 +150,7 @@ instance messageIsForeign :: IsForeign Message where
     read value = readProp "type" value >>= readMessageType where
         readMessageType "SUBSCRIBE" = throwError $ NEL.singleton $ ForeignError "Unimplemented!" -- TODO: implement
         readMessageType "SUBSCRIBED" = SubscribedMessage <$> readProp "subscribed" value
-        readMessageType "OFFERS" = OffersMessage <$> readProp "offers" value
+        readMessageType "OFFERS" = OffersMessage <$> (prop "offers" value >>= readProp "offers")
         readMessageType "RESCIND" = RescindMessage <$> (prop "rescind" value >>= readProp "offer_id")
         readMessageType "UPDATE" = UpdateMessage <$> (prop "update" value >>= readProp "status")
         readMessageType "MESSAGE" = MessageMessage <$> readProp "message" value
