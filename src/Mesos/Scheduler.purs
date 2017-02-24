@@ -113,6 +113,7 @@ data Message = SubscribeMessage Subscribe
              | FailureMessage Failure
              | ErrorMessage String
              | HeartbeatMessage
+             | CustomMessage (forall o. { type :: String | o })
 
 -- | Utility for Writing a mesos subscribe-style recordio message
 writeMessage :: forall a. (AsForeign a) => String -> String -> a -> Foreign
@@ -140,6 +141,7 @@ instance messageAsForeign :: AsForeign Message where
         , message: msg
         }
     write HeartbeatMessage = toForeign $ { type: "HEARTBEAT" }
+    write (CustomMessage obj) = toForeign obj
 
 instance messageIsForeign :: IsForeign Message where
     read value = readProp "type" value >>= readMessageType where
@@ -162,6 +164,31 @@ subscribeHeaders =
     SM.insert "Connection" "close" >>>
     RequestHeaders $
     SM.empty
+
+messageHeaders :: SM.StrMap String
+messageHeaders =
+    SM.insert "Content-Type" "application/json" $
+    SM.empty
+
+scheduler :: forall eff. Options RequestOptions
+          -> String
+          -> Message
+          -> Aff (http :: HTTP.HTTP | eff) Response
+scheduler userReqOpts mesosStreamId message =
+    makeAff \_ onS -> do
+        req <- request reqOpts onS
+        let reqStream = requestAsStream req
+            reqData = jsonStringify <<< write $ message
+        writeString reqStream Encoding.UTF8 reqData $ end reqStream (pure unit)
+        pure unit
+    where
+    reqOpts :: Options RequestOptions
+    reqOpts = flip execState userReqOpts do
+        overrideOption $ method := "POST"
+        overrideOption $ path := "/api/v1/scheduler"
+        overrideOption $ headers := (RequestHeaders $ SM.insert "Mesos-Stream-Id" mesosStreamId messageHeaders)
+        where
+            overrideOption o = modify $ flip (<>) o
 
 -- | Make a call to `/api/v1/subscribe`, taking an action for each message
 subscribe :: forall eff. Options RequestOptions
