@@ -8,14 +8,15 @@ import Control.Monad.Eff.Class (liftEff)
 import Control.Monad.Eff.Console (CONSOLE, log)
 import Control.Monad.Eff.Exception (EXCEPTION, Error, throw, throwException)
 import Control.Monad.Except (runExcept)
-import Control.Monad.Error.Class (class MonadError, throwError)
+import Control.Monad.Error.Class (class MonadError, throwError, catchError)
 import Control.Monad.State (execState, modify)
 import Data.Either (either)
 import Data.Foreign (Foreign, writeObject, toForeign, ForeignError(..))
 import Data.Foreign.Class (class AsForeign, class IsForeign, readProp, write, (.=))
 import Data.Foreign.Index (prop)
+import Data.Foreign.Undefined (Undefined(..))
 import Data.List.NonEmpty as NEL
-import Data.Maybe (maybe')
+import Data.Maybe (Maybe, maybe')
 import Data.Options (Options, (:=))
 import Data.StrMap (lookup)
 import Data.StrMap as SM
@@ -23,7 +24,7 @@ import Node.Encoding as Encoding
 import Node.HTTP as HTTP
 import Node.HTTP.Client (RequestHeaders(..), RequestOptions, Response, request, method, path, requestAsStream, responseHeaders, responseAsStream, statusCode, headers)
 import Node.Process (stdout)
-import Mesos.Raw (FrameworkID, FrameworkInfo, Offer, OfferID, TaskStatus, AgentID, ExecutorID)
+import Mesos.Raw (FrameworkID, FrameworkInfo, Offer, OfferID, TaskStatus, AgentID, ExecutorID, readPropNU)
 import Mesos.RecordIO (onRecordIO)
 import Mesos.Util (jsonStringify, fromJSON, throwErrorS)
 import Node.Stream (end, writeString, pipe)
@@ -78,6 +79,30 @@ instance executorMessageIsForeign :: IsForeign ExecutorMessage where
             , data: d
             }
 
+newtype Failure = Failure
+    { slaveId :: Maybe AgentID
+    , executorId :: Maybe ExecutorID
+    , status :: Maybe Int
+    }
+
+instance failureAsForeign :: AsForeign Failure where
+    write (Failure obj) = writeObject props where
+        props = [ "agent_id" .= (write $ Undefined obj.slaveId)
+                , "executor_id" .= (write $ Undefined obj.executorId)
+                , "status" .= (write $ Undefined obj.status)
+                ]
+
+instance failureIsForeign :: IsForeign Failure where
+    read obj = do
+        slaveId <- catchError (readPropNU "agent_id" obj) \_ -> readPropNU "slave_id" obj
+        executorId <- readPropNU "executor_id" obj
+        status <- readPropNU "status" obj
+        pure <<< Failure $
+            { slaveId: slaveId
+            , executorId: executorId
+            , status: status
+            }
+
 -- | Represents a single RecordIO message
 data Message = SubscribeMessage Subscribe
              | SubscribedMessage Subscribed
@@ -85,6 +110,7 @@ data Message = SubscribeMessage Subscribe
              | RescindMessage OfferID
              | UpdateMessage TaskStatus
              | MessageMessage ExecutorMessage
+             | FailureMessage Failure
              | HeartbeatMessage
 
 -- | Utility for Writing a mesos subscribe-style recordio message
@@ -107,6 +133,7 @@ instance messageAsForeign :: AsForeign Message where
         , update: { status: write taskStatus }
         }
     write (MessageMessage msg) = writeMessage "MESSAGE" "message" msg
+    write (FailureMessage failure) = writeMessage "FAILURE" "failure" failure
     write HeartbeatMessage = toForeign $ { type: "HEARTBEAT" }
 
 instance messageIsForeign :: IsForeign Message where
@@ -117,6 +144,7 @@ instance messageIsForeign :: IsForeign Message where
         readMessageType "RESCIND" = RescindMessage <$> (prop "rescind" value >>= readProp "offer_id")
         readMessageType "UPDATE" = UpdateMessage <$> (prop "update" value >>= readProp "status")
         readMessageType "MESSAGE" = MessageMessage <$> readProp "message" value
+        readMessageType "FAILURE" = FailureMessage <$> readProp "failure" value
         readMessageType "HEARTBEAT" = pure HeartbeatMessage
         readMessageType _ = throwError $ NEL.singleton $ ErrorAtProperty "type" (ForeignError "Unknown message type")
 
