@@ -114,6 +114,9 @@ data Message = SubscribeMessage Subscribe
              | ErrorMessage String
              | HeartbeatMessage
 
+instance messageShow :: Show Message where
+    show = jsonStringify <<< write
+
 -- | Utility for Writing a mesos subscribe-style recordio message
 writeMessage :: forall a. (AsForeign a) => String -> String -> a -> Foreign
 writeMessage t k d = writeObject props where
