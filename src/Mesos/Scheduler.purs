@@ -113,6 +113,7 @@ data Message = SubscribeMessage Subscribe
              | FailureMessage Failure
              | ErrorMessage String
              | HeartbeatMessage
+             | CustomMessage (forall o. { type :: String | o })
 
 -- | Utility for Writing a mesos subscribe-style recordio message
 writeMessage :: forall a. (AsForeign a) => String -> String -> a -> Foreign
@@ -140,6 +141,7 @@ instance messageAsForeign :: AsForeign Message where
         , message: msg
         }
     write HeartbeatMessage = toForeign $ { type: "HEARTBEAT" }
+    write (CustomMessage obj) = toForeign obj
 
 instance messageIsForeign :: IsForeign Message where
     read value = readProp "type" value >>= readMessageType where
