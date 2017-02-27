@@ -1,8 +1,8 @@
 module Mesos.Scheduler where
 
 import Prelude
-import Control.Monad.Aff (Aff, makeAff)
-import Control.Monad.Aff.AVar (AVAR)
+import Control.Monad.Aff (Aff, makeAff, runAff)
+import Control.Monad.Aff.AVar (AVAR, AVar, makeVar, putVar)
 import Control.Monad.Eff (Eff)
 import Control.Monad.Eff.Class (liftEff)
 import Control.Monad.Eff.Console (CONSOLE, log)
@@ -219,6 +219,17 @@ scheduler userReqOpts mesosStreamId message =
         overrideOption $ headers := (RequestHeaders $ SM.insert "Mesos-Stream-Id" mesosStreamId messageHeaders)
         where
             overrideOption o = modify $ flip (<>) o
+
+-- | `AVar` version of `subscribe`
+subscribe' :: forall eff. Options RequestOptions
+           -> Subscribe
+           -> Aff (avar :: AVAR, err :: EXCEPTION, http :: HTTP.HTTP, console :: CONSOLE | eff) (AVar Message)
+subscribe' userReqOpts subscribeInfo = do
+    v <- makeVar
+    subscribe userReqOpts subscribeInfo \str -> do
+        runAff throwException (\_ -> pure unit) $ putVar v str
+        pure unit
+    pure v
 
 -- | Make a call to `/api/v1/subscribe`, taking an action for each message
 subscribe :: forall eff. Options RequestOptions
