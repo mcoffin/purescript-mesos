@@ -1,6 +1,7 @@
 module Mesos.Scheduler where
 
 import Prelude
+import Control.Alt ((<|>))
 import Control.Monad.Aff (Aff, makeAff, runAff)
 import Control.Monad.Aff.AVar (AVAR, AVar, makeVar, putVar)
 import Control.Monad.Eff (Eff)
@@ -17,6 +18,7 @@ import Data.Foreign.Index (prop)
 import Data.Foreign.Undefined (Undefined(..))
 import Data.List.NonEmpty as NEL
 import Data.Maybe (Maybe, maybe')
+import Data.Newtype (class Newtype)
 import Data.Options (Options, (:=))
 import Data.StrMap (lookup)
 import Data.StrMap as SM
@@ -25,10 +27,34 @@ import Node.Encoding as Encoding
 import Node.HTTP as HTTP
 import Node.HTTP.Client (RequestHeaders(..), RequestOptions, Response, request, method, path, requestAsStream, responseHeaders, responseAsStream, statusCode, headers)
 import Node.Process (stdout)
-import Mesos.Raw (FrameworkID, FrameworkInfo, Offer, OfferID, TaskStatus, AgentID, ExecutorID, Filters, readPropNU, readPropNUM)
+import Mesos.Raw (FrameworkID, FrameworkInfo, Offer, OfferID, TaskID, TaskStatus, AgentID, ExecutorID, Filters, readPropNU, readPropNUM)
+import Mesos.Raw.Offer (Operation)
 import Mesos.RecordIO (onRecordIO)
+import Mesos.Stream (readFullString)
 import Mesos.Util (jsonStringify, fromJSON, throwErrorS)
 import Node.Stream (end, writeString, pipe)
+
+newtype ReconcileTask = ReconcileTask
+    { taskId :: TaskID
+    , slaveId :: Maybe AgentID
+    }
+
+instance reconcileTaskAsForeign :: AsForeign ReconcileTask where
+    write (ReconcileTask obj) = writeObject $
+        [ "task_id" .= write obj.taskId
+        , "slave_id" .= (write $ Undefined obj.slaveId)
+        ]
+
+instance reconcileTaskIsForeign :: IsForeign ReconcileTask where
+    read obj = do
+        taskId <- readProp "task_id" obj
+        slaveId <- readPropNU "slave_id" obj
+        pure <<< ReconcileTask $
+            { taskId: taskId
+            , slaveId: slaveId
+            }
+
+derive instance reconcileTaskNewtype :: Newtype ReconcileTask _
 
 newtype Subscribed = Subscribed { frameworkId :: FrameworkID
                                 , heartbeatIntervalSeconds :: Int
@@ -124,6 +150,54 @@ instance declineIsForeign :: IsForeign Decline where
             , filters: filters
             }
 
+newtype Accept = Accept
+    { offerIds :: Array OfferID
+    , operations :: Array Operation
+    , filters :: Maybe Filters
+    }
+
+instance acceptAsForeign :: AsForeign Accept where
+    write (Accept obj) = writeObject props where
+        props = [ "offer_ids" .= write obj.offerIds
+                , "operations" .= write obj.operations
+                , "filters" .= (write $ Undefined obj.filters)
+                ]
+
+instance acceptIsForeign :: IsForeign Accept where
+    read obj = do
+        offerIds <- readPropNUM "offer_ids" obj
+        operations <- readPropNUM "operations" obj
+        filters <- readPropNU "filters" obj
+        pure <<< Accept $
+            { offerIds: offerIds
+            , operations: operations
+            , filters: filters
+            }
+
+newtype Acknowlege = Acknowlege
+    { slaveId :: AgentID
+    , taskId :: TaskID
+    , uuid :: String
+    }
+
+instance acknowlegeAsForeign :: AsForeign Acknowlege where
+    write (Acknowlege obj) = writeObject props where
+        props = [ "agent_id" .= write obj.slaveId
+                , "task_id" .= write obj.taskId
+                , "uuid" .= write obj.uuid
+                ]
+
+instance acknowlegeIsForeign :: IsForeign Acknowlege where
+    read obj = do
+        slaveId <- readProp "slave_id" obj <|> readProp "agent_id" obj
+        taskId <- readProp "task_id" obj
+        uuid <- readProp "uuid" obj
+        pure <<< Acknowlege $
+            { slaveId: slaveId
+            , taskId: taskId
+            , uuid: uuid
+            }
+
 -- | Represents a single RecordIO message
 data Message = SubscribeMessage Subscribe
              | SubscribedMessage Subscribed
@@ -136,6 +210,9 @@ data Message = SubscribeMessage Subscribe
              | HeartbeatMessage
              | CustomMessage (forall o. { type :: String | o })
              | DeclineMessage FrameworkID Decline
+             | AcceptMessage FrameworkID Accept
+             | AcknowlegeMessage FrameworkID Acknowlege
+             | ReconcileMessage FrameworkID (Array ReconcileTask)
 
 instance messageShow :: Show Message where
     show = jsonStringify <<< write
@@ -172,6 +249,21 @@ instance messageAsForeign :: AsForeign Message where
         , framework_id: write fwid
         , decline: write decline
         }
+    write (AcceptMessage fwid acceptInfo) = toForeign $
+        { type: "ACCEPT"
+        , framework_id: write fwid
+        , accept: write acceptInfo
+        }
+    write (AcknowlegeMessage fwid acknowlegeInfo) = toForeign $
+        { type: "ACKNOWLEDGE"
+        , framework_id: write fwid
+        , acknowledge: write acknowlegeInfo
+        }
+    write (ReconcileMessage fwid reconcileTasks) = toForeign $
+        { type: "RECONCILE"
+        , framework_id: write fwid
+        , reconcile: { tasks: write reconcileTasks }
+        }
 
 instance messageIsForeign :: IsForeign Message where
     read value = readProp "type" value >>= readMessageType where
@@ -185,6 +277,9 @@ instance messageIsForeign :: IsForeign Message where
         readMessageType "ERRROR" = ErrorMessage <$> readProp "message" value
         readMessageType "HEARTBEAT" = pure HeartbeatMessage
         readMessageType "DECLINE" = DeclineMessage <$> readProp "framework_id" value <*> readProp "decline" value
+        readMessageType "ACCEPT" = AcceptMessage <$> readProp "framework_id" value <*> readProp "accept" value
+        readMessageType "ACKNOWLEDGE" = AcknowlegeMessage <$> readProp "framework_id" value <*> readProp "acknowlege" value
+        readMessageType "RECONCILE" = ReconcileMessage <$> readProp "framework_id" value <*> (prop "reconcile" value >>= readProp "tasks")
         readMessageType _ = throwError $ NEL.singleton $ ErrorAtProperty "type" (ForeignError "Unknown message type")
 
 -- | List of common headers to include in a call to the mesos scheduler subscribe api
@@ -201,10 +296,26 @@ messageHeaders =
     SM.insert "Content-Type" "application/json" $
     SM.empty
 
+checkResponseStatus :: forall eff. Int -> Response -> Aff (http :: HTTP.HTTP, err :: EXCEPTION | eff) Response
+checkResponseStatus expectedStatusCode res
+    | statusCode res == expectedStatusCode = pure res
+    | otherwise = do
+        let resStream = responseAsStream res
+        message <- readFullString resStream Encoding.UTF8
+        throwErrorS $ "Bad response status code (" <> (show <<< statusCode) res <> "): " <> message
+
+-- | Convenience wrapper for `scheduler` that sends accept messages
+accept :: forall eff. Options RequestOptions
+       -> String
+       -> Message
+       -> Aff (http :: HTTP.HTTP, err :: EXCEPTION | eff) Response
+accept userReqOpts mesosStreamId message =
+    scheduler userReqOpts mesosStreamId message >>= checkResponseStatus 202
+
 scheduler :: forall eff. Options RequestOptions
           -> String
           -> Message
-          -> Aff (http :: HTTP.HTTP | eff) Response
+          -> Aff (http :: HTTP.HTTP, err :: EXCEPTION | eff) Response
 scheduler userReqOpts mesosStreamId message =
     makeAff \_ onS -> do
         req <- request reqOpts onS
