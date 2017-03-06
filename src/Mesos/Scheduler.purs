@@ -20,6 +20,7 @@ import Data.Maybe (Maybe, maybe')
 import Data.Options (Options, (:=))
 import Data.StrMap (lookup)
 import Data.StrMap as SM
+import Data.Tuple (Tuple(..))
 import Node.Encoding as Encoding
 import Node.HTTP as HTTP
 import Node.HTTP.Client (RequestHeaders(..), RequestOptions, Response, request, method, path, requestAsStream, responseHeaders, responseAsStream, statusCode, headers)
@@ -223,19 +224,19 @@ scheduler userReqOpts mesosStreamId message =
 -- | `AVar` version of `subscribe`
 subscribe' :: forall eff. Options RequestOptions
            -> Subscribe
-           -> Aff (avar :: AVAR, err :: EXCEPTION, http :: HTTP.HTTP, console :: CONSOLE | eff) (AVar Message)
+           -> Aff (avar :: AVAR, err :: EXCEPTION, http :: HTTP.HTTP, console :: CONSOLE | eff) (Tuple String (AVar Message))
 subscribe' userReqOpts subscribeInfo = do
     v <- makeVar
-    subscribe userReqOpts subscribeInfo \str -> do
+    streamId <- subscribe userReqOpts subscribeInfo \str -> do
         runAff throwException (\_ -> pure unit) $ putVar v str
         pure unit
-    pure v
+    pure $ Tuple streamId v
 
 -- | Make a call to `/api/v1/subscribe`, taking an action for each message
 subscribe :: forall eff. Options RequestOptions
           -> Subscribe
           -> (Message -> Eff (avar :: AVAR, err :: EXCEPTION, http :: HTTP.HTTP, console :: CONSOLE | eff) Unit)
-          -> Aff (avar :: AVAR, err :: EXCEPTION, http :: HTTP.HTTP, console :: CONSOLE | eff) Unit
+          -> Aff (avar :: AVAR, err :: EXCEPTION, http :: HTTP.HTTP, console :: CONSOLE | eff) String
 subscribe userReqOpts subscribeInfo callback = do
     res <- makeAff \_ onS -> do
         req <- request reqOpts onS
@@ -245,12 +246,13 @@ subscribe userReqOpts subscribeInfo callback = do
         pure unit
     handleRes res
     where
-        handleRes :: Response -> Aff (avar :: AVAR, err :: EXCEPTION, http :: HTTP.HTTP, console :: CONSOLE | eff) Unit
+        handleRes :: Response -> Aff (avar :: AVAR, err :: EXCEPTION, http :: HTTP.HTTP, console :: CONSOLE | eff) String
         handleRes res
           | statusCode res == 200 = do
               mesosStreamId <- requiredHeader "mesos-stream-id"
               liftEff <<< log $ "mesos-stream-id: " <> mesosStreamId
               liftEff $ onRecordIO resStream throwException handleRecord
+              pure mesosStreamId
               where
                   handleRecord =
                       either (throw <<< show) callback <<<
@@ -267,7 +269,7 @@ subscribe userReqOpts subscribeInfo callback = do
                   log $ "Reponse status error (" <> (show <<< statusCode) res <> "):"
                   pipe (responseAsStream res) stdout
                   log ""
-              pure unit
+              throwErrorS $ "Response status error " <> (show <<< statusCode) res <> ")"
         reqOpts :: Options RequestOptions
         reqOpts = flip execState userReqOpts do
             overrideOption $ method := "POST"
