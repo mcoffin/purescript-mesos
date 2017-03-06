@@ -9,6 +9,7 @@ import Data.Foreign.NullOrUndefined (readNullOrUndefined, unNullOrUndefined)
 import Data.Foreign.Undefined (Undefined(..))
 import Data.Maybe (Maybe, fromMaybe)
 import Data.Monoid (class Monoid, mempty)
+import Data.Newtype (class Newtype)
 import Data.List.NonEmpty as NEL
 
 readPropNU :: forall a. (IsForeign a) => String -> Foreign -> F (Maybe a)
@@ -322,6 +323,8 @@ instance valueIsForeign :: (IsForeign a) => IsForeign (Value a) where
     read obj = do
         v <- readProp "value" obj
         pure $ Value v
+
+derive instance valueNewtype :: Newtype (Value a) _
 
 type OfferID = Value String
 type FrameworkID = Value String

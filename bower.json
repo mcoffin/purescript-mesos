@@ -20,7 +20,8 @@
     "purescript-node-streams": "^2.0.0",
     "purescript-maybe": "^2.0.1",
     "purescript-foldable-traversable": "^2.2.0",
-    "purescript-transformers": "^2.2.0"
+    "purescript-transformers": "^2.2.0",
+    "purescript-newtype": "^1.3.0"
   },
   "devDependencies": {
     "purescript-psci-support": "^2.0.0",
