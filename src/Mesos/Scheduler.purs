@@ -27,12 +27,38 @@ import Node.Encoding as Encoding
 import Node.HTTP as HTTP
 import Node.HTTP.Client (RequestHeaders(..), RequestOptions, Response, request, method, path, requestAsStream, responseHeaders, responseAsStream, statusCode, headers)
 import Node.Process (stdout)
-import Mesos.Raw (FrameworkID, FrameworkInfo, Offer, OfferID, TaskID, TaskStatus, AgentID, ExecutorID, Filters, readPropNU, readPropNUM)
+import Mesos.Raw (FrameworkID, FrameworkInfo, KillPolicy, Offer, OfferID, TaskID, TaskStatus, AgentID, ExecutorID, Filters, readPropNU, readPropNUM)
 import Mesos.Raw.Offer (Operation)
 import Mesos.RecordIO (onRecordIO)
 import Mesos.Stream (readFullString)
 import Mesos.Util (jsonStringify, fromJSON, throwErrorS)
 import Node.Stream (end, writeString, pipe)
+
+newtype Kill = Kill
+    { taskId :: TaskID
+    , slaveId :: Maybe AgentID
+    , killPolicy :: Maybe KillPolicy
+    }
+
+instance killAsForeign :: AsForeign Kill where
+    write (Kill obj) = writeObject $
+        [ "task_id" .= write obj.taskId
+        , "slave_id" .= (write $ Undefined obj.slaveId)
+        , "kill_policy" .= (write $ Undefined obj.killPolicy)
+        ]
+
+instance killIsForeign :: IsForeign Kill where
+    read obj = do
+        taskId <- readProp "task_id" obj
+        slaveId <- readPropNU "slave_id" obj
+        killPolicy <- readPropNU "kill_policy" obj
+        pure <<< Kill $
+            { taskId: taskId
+            , slaveId: slaveId
+            , killPolicy: killPolicy
+            }
+
+derive instance killNewtype :: Newtype Kill _
 
 newtype ReconcileTask = ReconcileTask
     { taskId :: TaskID
@@ -213,6 +239,7 @@ data Message = SubscribeMessage Subscribe
              | AcceptMessage FrameworkID Accept
              | AcknowlegeMessage FrameworkID Acknowlege
              | ReconcileMessage FrameworkID (Array ReconcileTask)
+             | KillMessage FrameworkID Kill
 
 instance messageShow :: Show Message where
     show = jsonStringify <<< write
@@ -264,6 +291,11 @@ instance messageAsForeign :: AsForeign Message where
         , framework_id: write fwid
         , reconcile: { tasks: write reconcileTasks }
         }
+    write (KillMessage fwid killInfo) = toForeign $
+        { type: "KILL"
+        , framework_id: write fwid
+        , kill: write killInfo
+        }
 
 instance messageIsForeign :: IsForeign Message where
     read value = readProp "type" value >>= readMessageType where
@@ -280,6 +312,7 @@ instance messageIsForeign :: IsForeign Message where
         readMessageType "ACCEPT" = AcceptMessage <$> readProp "framework_id" value <*> readProp "accept" value
         readMessageType "ACKNOWLEDGE" = AcknowlegeMessage <$> readProp "framework_id" value <*> readProp "acknowlege" value
         readMessageType "RECONCILE" = ReconcileMessage <$> readProp "framework_id" value <*> (prop "reconcile" value >>= readProp "tasks")
+        readMessageType "KILL" = KillMessage <$> readProp "framework_id" value <*> readProp "kill" value
         readMessageType _ = throwError $ NEL.singleton $ ErrorAtProperty "type" (ForeignError "Unknown message type")
 
 -- | List of common headers to include in a call to the mesos scheduler subscribe api
