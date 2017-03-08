@@ -9,9 +9,10 @@ import Data.Foreign.Class (class AsForeign, class IsForeign, read, write, readPr
 import Data.Foreign.Index (prop)
 import Data.Foreign.NullOrUndefined (readNullOrUndefined, unNullOrUndefined)
 import Data.Foreign.Undefined (Undefined(..))
+import Data.Identity (Identity)
 import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Monoid (class Monoid, mempty)
-import Data.Newtype (class Newtype)
+import Data.Newtype (class Newtype, unwrap, over2)
 import Data.List.NonEmpty as NEL
 
 readPropNU :: forall a. (IsForeign a) => String -> Foreign -> F (Maybe a)
@@ -910,6 +911,12 @@ instance valueIsForeign :: (IsForeign a) => IsForeign (Value a) where
         pure $ Value v
 
 derive instance valueNewtype :: Newtype (Value a) _
+
+instance valueEq :: (Eq a) => Eq (Value a) where
+    eq a b = unwrap ((over2 Value eq a b) :: Identity Boolean)
+
+instance valueOrd :: (Ord a) => Ord (Value a) where
+    compare a b =  unwrap ((over2 Value compare a b) :: Identity Ordering)
 
 type OfferID = Value String
 type FrameworkID = Value String
