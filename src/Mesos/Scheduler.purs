@@ -398,10 +398,8 @@ subscribe userReqOpts subscribeInfo callback = do
               liftEff $ onRecordIO resStream throwException handleRecord
               pure mesosStreamId
               where
-                  handleRecord =
-                      either (throw <<< show) callback <<<
-                      runExcept <<<
-                      fromJSON
+                  handleRecord recordStr =
+                      either (throw <<< flip (<>) (": " <> recordStr) <<< show) callback <<< runExcept <<< fromJSON $ recordStr
                   headers = responseHeaders res
                   resStream = responseAsStream res
                   requiredHeader :: forall m. (MonadError Error m) => String -> m String

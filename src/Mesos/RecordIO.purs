@@ -74,16 +74,18 @@ recordIO stream = makeVar >>= produceRecords where
               -- If we're reading data, proceed to the data reading stage
               readDataStage s next
         where
+            byteLength :: String -> Int
+            byteLength = flip Encoding.byteLength Encoding.UTF8
             readDataStage :: forall eff0. { length :: Int, buffer :: String } -> String -> StateT ReadState (Aff (avar :: AVAR | eff0)) (Step String Unit)
             readDataStage s next
-              | S.length s.buffer + S.length next < s.length = do
+              | byteLength s.buffer + byteLength next < s.length = do
                   -- If we don't have enough data to finish the message, buffer the data and terminate
                   put <<< ReadData $ s { buffer = s.buffer <> next }
                   pure $ Done unit
               | otherwise = do
                   -- If we have enough data to finish the message, read the finished data, push to the AVar
                   -- then reset to initial state and loop with any trailing data
-                  let nextA = fromMaybe' (\_ -> [next]) $ splitAt (s.length - (S.length s.buffer)) next
+                  let nextA = fromMaybe' (\_ -> [next]) $ splitAt (s.length - (byteLength s.buffer)) next
                       dat = s.buffer <> unsafePartial unsafeIndex nextA 0
                       nextNext = fromMaybe "" $ index nextA 1
                   lift $ putVar var dat
