@@ -362,7 +362,7 @@ instance commandInfoURIIsForeign :: IsForeign CommandInfoURI where
 newtype CommandInfo = CommandInfo
     { uris :: Array CommandInfoURI
     , environment :: Maybe Environment
-    , shell :: Boolean
+    , shell :: Maybe Boolean
     , value :: Maybe String
     , arguments :: Array String
     , user :: Maybe String
@@ -372,7 +372,7 @@ instance commandInfoAsForeign :: AsForeign CommandInfo where
     write (CommandInfo obj) = writeObject props where
         props = [ "uris" .= write obj.uris
                 , "environment" .= (write $ Undefined obj.environment)
-                , "shell" .= write obj.shell
+                , "shell" .= (write $ Undefined obj.shell)
                 , "value" .= (write $ Undefined obj.value)
                 , "arguments" .= write obj.arguments
                 , "user" .= (write $ Undefined obj.user)
@@ -389,7 +389,7 @@ instance commandInfoIsForeign :: IsForeign CommandInfo where
         pure <<< CommandInfo $
             { uris: uris
             , environment: environment
-            , shell: fromMaybe true shell
+            , shell: shell
             , value: value
             , arguments: arguments
             , user: user
